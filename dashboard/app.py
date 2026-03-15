@@ -1,6 +1,8 @@
 import warnings
 warnings.filterwarnings("ignore")
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -28,12 +30,6 @@ st.markdown("""
     padding-bottom: 2rem;
     padding-left: 2rem;
     padding-right: 2rem;
-}
-.metric-card {
-    padding: 14px 16px;
-    border-radius: 14px;
-    background-color: rgba(255,255,255,0.03);
-    border: 1px solid rgba(255,255,255,0.08);
 }
 .badge-low {
     display:inline-block;
@@ -152,69 +148,6 @@ def apply_theme(fig: go.Figure) -> go.Figure:
     return fig
 
 
-@st.cache_data(show_spinner=False)
-def load_and_prepare_data(csv_path: str) -> pd.DataFrame:
-    df = pd.read_csv(csv_path)
-
-    df["date"] = pd.to_datetime(df["Timestamp"], unit="s")
-    df = df.set_index("date").sort_index()
-
-    btc_daily = df["Close"].resample("1D").last().dropna().to_frame()
-    btc_daily["return_pct"] = btc_daily["Close"].pct_change() * 100
-    btc_daily = btc_daily.dropna()
-
-    # Rolling market metrics
-    btc_daily["vol_30d"] = btc_daily["return_pct"].rolling(30).std()
-    btc_daily["vol_60d"] = btc_daily["return_pct"].rolling(60).std()
-
-    btc_daily["VaR_5"] = btc_daily["return_pct"].rolling(250).apply(
-        lambda x: historical_var(x, 0.05), raw=False
-    )
-    btc_daily["VaR_1"] = btc_daily["return_pct"].rolling(250).apply(
-        lambda x: historical_var(x, 0.01), raw=False
-    )
-
-    btc_daily["ES_5"] = btc_daily["return_pct"].rolling(250).apply(
-        lambda x: historical_es(x, 0.05), raw=False
-    )
-    btc_daily["ES_1"] = btc_daily["return_pct"].rolling(250).apply(
-        lambda x: historical_es(x, 0.01), raw=False
-    )
-
-    # Regime inputs
-    btc_daily["vol_score"] = btc_daily["vol_30d"]
-    btc_daily["var_score"] = -btc_daily["VaR_5"]
-    btc_daily["es_score"] = -btc_daily["ES_5"]
-
-    regime_df = btc_daily.dropna().copy()
-
-    regime_df["vol_pct"] = regime_df["vol_score"].rank(pct=True)
-    regime_df["var_pct"] = regime_df["var_score"].rank(pct=True)
-    regime_df["es_pct"] = regime_df["es_score"].rank(pct=True)
-
-    regime_df["risk_score"] = (
-        0.4 * regime_df["vol_pct"] +
-        0.3 * regime_df["var_pct"] +
-        0.3 * regime_df["es_pct"]
-    )
-
-    regime_df["risk_regime"] = regime_df["risk_score"].apply(classify_regime)
-
-    regime_map = {
-        "Low Risk": 1,
-        "Moderate Risk": 2,
-        "High Risk": 3,
-        "Extreme Risk": 4
-    }
-    regime_df["regime_code"] = regime_df["risk_regime"].map(regime_map)
-
-    # Exceedances
-    regime_df["exceed_5"] = regime_df["return_pct"] < regime_df["VaR_5"]
-    regime_df["exceed_1"] = regime_df["return_pct"] < regime_df["VaR_1"]
-
-    return regime_df
-
-
 def filter_by_range(df: pd.DataFrame, range_option: str) -> pd.DataFrame:
     if range_option == "Full History":
         return df.copy()
@@ -229,36 +162,45 @@ def filter_by_range(df: pd.DataFrame, range_option: str) -> pd.DataFrame:
     return df.copy()
 
 
-def latest_change(series: pd.Series, periods: int = 1) -> float | None:
-    if len(series.dropna()) <= periods:
+def latest_change(series: pd.Series, periods: int = 1):
+    clean = series.dropna()
+    if len(clean) <= periods:
         return None
-    return series.iloc[-1] - series.iloc[-1 - periods]
+    return clean.iloc[-1] - clean.iloc[-1 - periods]
 
 
 # =========================================================
 # LOAD DATA
 # =========================================================
-from pathlib import Path
-import pandas as pd
-import streamlit as st
-
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_PATH = BASE_DIR / "data" / "btc_daily.csv"
 
+
 @st.cache_data(show_spinner=False)
-def load_and_prepare_data(csv_path):
+def load_and_prepare_data(csv_path: Path) -> pd.DataFrame:
     if not csv_path.exists():
         st.error(f"Data file not found: {csv_path}")
         st.stop()
 
     df = pd.read_csv(csv_path)
+
+    # Expected columns in btc_daily.csv:
+    # date, Close, return_pct
+    if "date" not in df.columns:
+        st.error("btc_daily.csv must contain a 'date' column.")
+        st.stop()
+
+    if "Close" not in df.columns:
+        st.error("btc_daily.csv must contain a 'Close' column.")
+        st.stop()
+
     df["date"] = pd.to_datetime(df["date"])
     df = df.set_index("date").sort_index()
 
-    # Nếu file đã có return_pct rồi thì giữ nguyên
-    # nếu chưa có thì tính lại
     if "return_pct" not in df.columns:
         df["return_pct"] = df["Close"].pct_change() * 100
+
+    df = df.dropna().copy()
 
     # Rolling market metrics
     df["vol_30d"] = df["return_pct"].rolling(30).std()
@@ -267,11 +209,6 @@ def load_and_prepare_data(csv_path):
     df["VaR_5"] = df["return_pct"].rolling(250).quantile(0.05)
     df["VaR_1"] = df["return_pct"].rolling(250).quantile(0.01)
 
-    def historical_es(x, alpha=0.05):
-        var = x.quantile(alpha)
-        tail = x[x <= var]
-        return tail.mean() if len(tail) > 0 else None
-
     df["ES_5"] = df["return_pct"].rolling(250).apply(
         lambda x: historical_es(pd.Series(x), 0.05), raw=False
     )
@@ -279,6 +216,7 @@ def load_and_prepare_data(csv_path):
         lambda x: historical_es(pd.Series(x), 0.01), raw=False
     )
 
+    # Risk regime inputs
     df["vol_score"] = df["vol_30d"]
     df["var_score"] = -df["VaR_5"]
     df["es_score"] = -df["ES_5"]
@@ -295,15 +233,6 @@ def load_and_prepare_data(csv_path):
         0.3 * regime_df["es_pct"]
     )
 
-    def classify_regime(score):
-        if score < 0.50:
-            return "Low Risk"
-        elif score < 0.80:
-            return "Moderate Risk"
-        elif score < 0.95:
-            return "High Risk"
-        return "Extreme Risk"
-
     regime_df["risk_regime"] = regime_df["risk_score"].apply(classify_regime)
 
     regime_map = {
@@ -318,6 +247,13 @@ def load_and_prepare_data(csv_path):
     regime_df["exceed_1"] = regime_df["return_pct"] < regime_df["VaR_1"]
 
     return regime_df
+
+
+data = load_and_prepare_data(DATA_PATH)
+
+if data.empty:
+    st.error("No data available after preprocessing.")
+    st.stop()
 
 
 # =========================================================
@@ -339,7 +275,7 @@ tail_level = st.sidebar.selectbox(
 
 show_exceedances = st.sidebar.checkbox("Highlight Exceedances", value=True)
 
-display_df = filter_by_range(DATA_PATH, view_range)
+display_df = filter_by_range(data, view_range)
 latest = data.iloc[-1]
 
 selected_var = "VaR_5" if tail_level == "5%" else "VaR_1"
@@ -607,7 +543,11 @@ st.dataframe(
 # =========================================================
 st.subheader("Recent Stress Events")
 
-recent_events = data.loc[data["exceed_5"], ["Close", "return_pct", "VaR_5", "ES_5", "risk_regime"]].tail(15)
+recent_events = data.loc[
+    data["exceed_5"],
+    ["Close", "return_pct", "VaR_5", "ES_5", "risk_regime"]
+].tail(15)
+
 recent_events = recent_events.rename(columns={
     "Close": "BTC Close",
     "return_pct": "Actual Return (%)",
@@ -634,7 +574,7 @@ st.markdown("---")
 st.markdown(
     """
 **Methodology Notes**
-- Daily BTC prices are created by resampling historical minute-level data.
+- Daily BTC prices are loaded from a deployment-friendly daily dataset.
 - Rolling volatility is computed using 30-day and 60-day realized volatility.
 - VaR and Expected Shortfall are estimated from 250-day rolling historical returns.
 - Regime classification is based on a composite risk score using volatility, VaR, and ES percentiles.
