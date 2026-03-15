@@ -339,7 +339,7 @@ tail_level = st.sidebar.selectbox(
 
 show_exceedances = st.sidebar.checkbox("Highlight Exceedances", value=True)
 
-display_df = filter_by_range(data, view_range)
+display_df = filter_by_range(DATA_PATH, view_range)
 latest = data.iloc[-1]
 
 selected_var = "VaR_5" if tail_level == "5%" else "VaR_1"
