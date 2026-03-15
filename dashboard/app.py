@@ -238,7 +238,7 @@ def latest_change(series: pd.Series, periods: int = 1) -> float | None:
 # =========================================================
 # LOAD DATA
 # =========================================================
-DATA_PATH = "/Users/andy-phucnguyen/Downloads/btcusd_1-min_data.csv"
+DATA_PATH = "https://github.com/mczielinski/kaggle-bitcoin/"
 data = load_and_prepare_data(DATA_PATH)
 
 if data.empty:
