@@ -238,12 +238,86 @@ def latest_change(series: pd.Series, periods: int = 1) -> float | None:
 # =========================================================
 # LOAD DATA
 # =========================================================
-DATA_PATH = "btc_daily.csv"
-data = load_and_prepare_data(DATA_PATH)
+from pathlib import Path
+import pandas as pd
+import streamlit as st
 
-if data.empty:
-    st.error("No data available after preprocessing.")
-    st.stop()
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_PATH = BASE_DIR / "data" / "btc_daily.csv"
+
+@st.cache_data(show_spinner=False)
+def load_and_prepare_data(csv_path):
+    if not csv_path.exists():
+        st.error(f"Data file not found: {csv_path}")
+        st.stop()
+
+    df = pd.read_csv(csv_path)
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.set_index("date").sort_index()
+
+    # Nếu file đã có return_pct rồi thì giữ nguyên
+    # nếu chưa có thì tính lại
+    if "return_pct" not in df.columns:
+        df["return_pct"] = df["Close"].pct_change() * 100
+
+    # Rolling market metrics
+    df["vol_30d"] = df["return_pct"].rolling(30).std()
+    df["vol_60d"] = df["return_pct"].rolling(60).std()
+
+    df["VaR_5"] = df["return_pct"].rolling(250).quantile(0.05)
+    df["VaR_1"] = df["return_pct"].rolling(250).quantile(0.01)
+
+    def historical_es(x, alpha=0.05):
+        var = x.quantile(alpha)
+        tail = x[x <= var]
+        return tail.mean() if len(tail) > 0 else None
+
+    df["ES_5"] = df["return_pct"].rolling(250).apply(
+        lambda x: historical_es(pd.Series(x), 0.05), raw=False
+    )
+    df["ES_1"] = df["return_pct"].rolling(250).apply(
+        lambda x: historical_es(pd.Series(x), 0.01), raw=False
+    )
+
+    df["vol_score"] = df["vol_30d"]
+    df["var_score"] = -df["VaR_5"]
+    df["es_score"] = -df["ES_5"]
+
+    regime_df = df.dropna().copy()
+
+    regime_df["vol_pct"] = regime_df["vol_score"].rank(pct=True)
+    regime_df["var_pct"] = regime_df["var_score"].rank(pct=True)
+    regime_df["es_pct"] = regime_df["es_score"].rank(pct=True)
+
+    regime_df["risk_score"] = (
+        0.4 * regime_df["vol_pct"] +
+        0.3 * regime_df["var_pct"] +
+        0.3 * regime_df["es_pct"]
+    )
+
+    def classify_regime(score):
+        if score < 0.50:
+            return "Low Risk"
+        elif score < 0.80:
+            return "Moderate Risk"
+        elif score < 0.95:
+            return "High Risk"
+        return "Extreme Risk"
+
+    regime_df["risk_regime"] = regime_df["risk_score"].apply(classify_regime)
+
+    regime_map = {
+        "Low Risk": 1,
+        "Moderate Risk": 2,
+        "High Risk": 3,
+        "Extreme Risk": 4
+    }
+    regime_df["regime_code"] = regime_df["risk_regime"].map(regime_map)
+
+    regime_df["exceed_5"] = regime_df["return_pct"] < regime_df["VaR_5"]
+    regime_df["exceed_1"] = regime_df["return_pct"] < regime_df["VaR_1"]
+
+    return regime_df
 
 
 # =========================================================
