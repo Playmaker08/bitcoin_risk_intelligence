@@ -8,7 +8,7 @@ import pandas as pd
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
-
+from market_data import get_live_btc_market_data
 
 # =========================================================
 # PAGE CONFIG
@@ -266,7 +266,11 @@ data = load_and_prepare_data(DATA_PATH)
 if data.empty:
     st.error("No data available after preprocessing.")
     st.stop()
+# =========================================================
+# LIVE MARKET DATA
+# =========================================================
 
+live_market = get_live_btc_market_data()
 
 # =========================================================
 # SIDEBAR
@@ -308,6 +312,56 @@ st.markdown("---")
 
 
 # =========================================================
+# LIVE MARKET SNAPSHOT
+# =========================================================
+st.subheader("Live Market Snapshot")
+
+if live_market["status"] == "live":
+
+    live1, live2, live3, live4 = st.columns(4)
+
+    with live1:
+        st.metric(
+            "Live BTC Price",
+            f"${live_market['price']:,.0f}"
+        )
+
+    with live2:
+        change = live_market["change_24h"]
+
+        st.metric(
+            "24H Change",
+            f"{change:.2f}%",
+            delta=f"{change:.2f}%"
+        )
+
+    with live3:
+        st.metric(
+            "24H Trading Volume",
+            f"${live_market['volume_24h'] / 1e9:,.2f}B"
+        )
+
+    with live4:
+        st.metric(
+            "Market Cap",
+            f"${live_market['market_cap'] / 1e12:,.2f}T"
+        )
+
+    if live_market["last_updated"] is not None:
+        st.caption(
+            "Live market feed • Last updated: "
+            f"{live_market['last_updated'].strftime('%Y-%m-%d %H:%M:%S UTC')}"
+        )
+
+else:
+    st.warning(
+        "Live market feed is temporarily unavailable. "
+        "Historical risk analytics remain available."
+    )
+
+st.markdown("---")
+
+# =========================================================
 # EXECUTIVE SUMMARY
 # =========================================================
 st.subheader("Executive Summary")
@@ -319,9 +373,10 @@ vol_delta = latest_change(data["vol_30d"], periods=1)
 var_delta = latest_change(data[selected_var], periods=1)
 es_delta = latest_change(data[selected_es], periods=1)
 
+
 with kpi1:
     st.metric(
-        "BTC Price",
+        "Historical Close",
         f"${latest['Close']:,.0f}",
         None if price_delta is None else f"{price_delta:,.0f}"
     )
