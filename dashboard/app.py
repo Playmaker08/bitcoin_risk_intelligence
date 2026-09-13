@@ -278,7 +278,66 @@ def classify_tail_risk_trend(
         return "Improving"
 
     return "Stable"
-    
+
+def calculate_var_backtest(df: pd.DataFrame) -> dict:
+    """
+    Calculate empirical VaR exceedance rates.
+    """
+
+    valid = df.dropna(
+        subset=["return_pct", "VaR_5", "VaR_1"]
+    ).copy()
+
+    if valid.empty:
+        return {
+            "observations": 0,
+            "breaches_5": 0,
+            "breaches_1": 0,
+            "rate_5": np.nan,
+            "rate_1": np.nan,
+        }
+
+    n = len(valid)
+
+    breaches_5 = int(
+        (valid["return_pct"] < valid["VaR_5"]).sum()
+    )
+
+    breaches_1 = int(
+        (valid["return_pct"] < valid["VaR_1"]).sum()
+    )
+
+    return {
+        "observations": n,
+        "breaches_5": breaches_5,
+        "breaches_1": breaches_1,
+        "rate_5": breaches_5 / n,
+        "rate_1": breaches_1 / n,
+    }
+
+    def interpret_var_calibration(
+    observed_rate: float,
+    expected_rate: float,
+    tolerance: float = 0.25
+) -> str:
+    """
+    Compare observed breach frequency with nominal VaR level.
+    """
+
+    if np.isnan(observed_rate):
+        return "N/A"
+
+    lower = expected_rate * (1 - tolerance)
+    upper = expected_rate * (1 + tolerance)
+
+    if observed_rate < lower:
+        return "Conservative"
+
+    elif observed_rate > upper:
+        return "Underestimating Risk"
+
+    return "Well Calibrated"
+
 # =========================================================
 # DATA PIPELINE
 # =========================================================
@@ -634,6 +693,17 @@ else:
 
 data = calculate_risk_metrics(
     combined_data
+)
+var_backtest = calculate_var_backtest(data)
+
+calibration_5 = interpret_var_calibration(
+    var_backtest["rate_5"],
+    0.05
+)
+
+calibration_1 = interpret_var_calibration(
+    var_backtest["rate_1"],
+    0.01
 )
 
 if data.empty:
@@ -1079,6 +1149,52 @@ with col_right:
     apply_theme(fig_risk)
     st.plotly_chart(fig_risk, use_container_width=True)
 
+# =========================================================
+# MODEL VALIDATION
+# =========================================================
+
+st.subheader("Model Validation")
+
+bt1, bt2, bt3, bt4 = st.columns(4)
+
+with bt1:
+    st.metric(
+        "5% VaR Breach Rate",
+        "N/A"
+        if np.isnan(var_backtest["rate_5"])
+        else f"{var_backtest['rate_5']:.2%}",
+        "Expected: 5%"
+    )
+
+with bt2:
+    st.metric(
+        "1% VaR Breach Rate",
+        "N/A"
+        if np.isnan(var_backtest["rate_1"])
+        else f"{var_backtest['rate_1']:.2%}",
+        "Expected: 1%"
+    )
+
+with bt3:
+    st.metric(
+        "5% VaR Breaches",
+        f"{var_backtest['breaches_5']:,}"
+    )
+
+with bt4:
+    st.metric(
+        "1% VaR Breaches",
+        f"{var_backtest['breaches_1']:,}"
+    )
+
+st.info(
+    f"5% VaR calibration: **{calibration_5}** "
+    f"(observed breach rate "
+    f"{var_backtest['rate_5']:.2%} vs nominal 5%). "
+    f"1% VaR calibration: **{calibration_1}** "
+    f"(observed breach rate "
+    f"{var_backtest['rate_1']:.2%} vs nominal 1%)."
+)
 
 # =========================================================
 # REGIME SECTION
