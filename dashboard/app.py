@@ -338,6 +338,51 @@ def interpret_var_calibration(
 
     return "Well Calibrated"
 
+def check_regime_ordering(validation_df: pd.DataFrame) -> str:
+    """
+    Check whether forward volatility generally rises
+    across Low -> Moderate -> High -> Extreme regimes.
+    """
+
+    values = (
+        validation_df["avg_forward_7d_vol"]
+        .dropna()
+        .values
+    )
+
+    if len(values) < 2:
+        return "Insufficient Data"
+
+    if all(
+        values[i] <= values[i + 1]
+        for i in range(len(values) - 1)
+    ):
+        return "Strong Separation"
+
+    return "Mixed Separation"
+
+regime_validation_status = check_regime_ordering(
+    regime_validation
+)
+
+if regime_validation_status == "Strong Separation":
+    st.success(
+        "Regime validation: Strong Separation — higher current "
+        "risk regimes are associated with higher forward 7-day volatility."
+    )
+
+elif regime_validation_status == "Mixed Separation":
+    st.warning(
+        "Regime validation: Mixed Separation — the regime system "
+        "captures meaningful risk differences, but forward volatility "
+        "is not strictly monotonic across all regimes."
+    )
+
+else:
+    st.info(
+        "Regime validation: insufficient observations for a reliable comparison."
+    )
+
 # =========================================================
 # DATA PIPELINE
 # =========================================================
@@ -694,6 +739,48 @@ else:
 data = calculate_risk_metrics(
     combined_data
 )
+
+# =========================================================
+# REGIME VALIDATION FEATURES
+# =========================================================
+
+data["abs_return"] = data["return_pct"].abs()
+
+data["forward_7d_abs_return"] = (
+    data["return_pct"]
+    .abs()
+    .rolling(7)
+    .mean()
+    .shift(-7)
+)
+
+data["forward_7d_vol"] = (
+    data["return_pct"]
+    .rolling(7)
+    .std()
+    .shift(-7)
+)
+
+regime_validation = (
+    data
+    .groupby("risk_regime")
+    .agg(
+        avg_abs_return=("abs_return", "mean"),
+        avg_vol_30d=("vol_30d", "mean"),
+        avg_forward_7d_abs_return=("forward_7d_abs_return", "mean"),
+        avg_forward_7d_vol=("forward_7d_vol", "mean"),
+        avg_es_5=("ES_5", "mean"),
+        observations=("risk_regime", "count"),
+    )
+    .reindex([
+        "Low Risk",
+        "Moderate Risk",
+        "High Risk",
+        "Extreme Risk",
+    ])
+)
+
+
 var_backtest = calculate_var_backtest(data)
 
 calibration_5 = interpret_var_calibration(
@@ -705,6 +792,52 @@ calibration_1 = interpret_var_calibration(
     var_backtest["rate_1"],
     0.01
 )
+
+# =========================================================
+# REGIME VALIDATION
+# =========================================================
+
+st.subheader("Regime Validation")
+
+st.markdown(
+    "This section evaluates whether higher risk regimes correspond "
+    "to larger realized and forward-looking market risk."
+)
+
+st.dataframe(
+    regime_validation.style.format({
+        "avg_abs_return": "{:.3f}%",
+        "avg_vol_30d": "{:.3f}%",
+        "avg_forward_7d_abs_return": "{:.3f}%",
+        "avg_forward_7d_vol": "{:.3f}%",
+        "avg_es_5": "{:.3f}%",
+        "observations": "{:,.0f}",
+    }),
+    use_container_width=True
+)
+regime_plot_df = (
+    regime_validation
+    .reset_index()
+    .rename(columns={
+        "risk_regime": "Risk Regime",
+        "avg_forward_7d_vol": "Forward 7D Volatility"
+    })
+)
+
+fig_forward = px.bar(
+    regime_plot_df,
+    x="Risk Regime",
+    y="Forward 7D Volatility",
+    title="Forward 7-Day Volatility by Current Risk Regime"
+)
+
+apply_theme(fig_forward)
+
+st.plotly_chart(
+    fig_forward,
+    use_container_width=True
+)
+
 
 if data.empty:
     st.error("No data available after risk calculations.")
