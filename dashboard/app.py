@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import math
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
@@ -360,6 +361,219 @@ def check_regime_ordering(validation_df: pd.DataFrame) -> str:
         return "Strong Separation"
 
     return "Mixed Separation"
+
+def log_likelihood_term(count: int, probability: float) -> float:
+    """
+    Compute count * log(probability) safely.
+    Uses the convention 0 * log(0) = 0.
+    """
+
+    if count == 0:
+        return 0.0
+
+    if probability <= 0 or probability >= 1:
+        return -np.inf
+
+    return count * math.log(probability)
+
+def kupiec_test(
+    exceedances: pd.Series,
+    alpha: float
+) -> dict:
+    """
+    Kupiec Proportion-of-Failures test.
+
+    H0: empirical VaR exceedance probability = alpha.
+    """
+
+    breaches = exceedances.dropna().astype(bool)
+
+    n = len(breaches)
+    x = int(breaches.sum())
+
+    if n == 0:
+        return {
+            "lr_uc": np.nan,
+            "p_value": np.nan,
+            "result": "N/A",
+        }
+
+    p_hat = x / n
+
+    # Null likelihood
+    log_l0 = (
+        log_likelihood_term(n - x, 1 - alpha)
+        + log_likelihood_term(x, alpha)
+    )
+
+    # Alternative likelihood
+    if p_hat == 0:
+        log_l1 = 0.0
+    elif p_hat == 1:
+        log_l1 = 0.0
+    else:
+        log_l1 = (
+            log_likelihood_term(n - x, 1 - p_hat)
+            + log_likelihood_term(x, p_hat)
+        )
+
+    lr_uc = max(
+        0.0,
+        -2 * (log_l0 - log_l1)
+    )
+
+    # Chi-square(1) survival function
+    p_value = math.erfc(
+        math.sqrt(lr_uc / 2)
+    )
+
+    return {
+        "lr_uc": lr_uc,
+        "p_value": p_value,
+        "result": (
+            "Pass"
+            if p_value >= 0.05
+            else "Reject"
+        ),
+    }
+
+def christoffersen_independence_test(
+    exceedances: pd.Series
+) -> dict:
+    """
+    Christoffersen independence test.
+
+    Tests whether VaR breaches are independent over time.
+    """
+
+    breaches = (
+        exceedances
+        .dropna()
+        .astype(int)
+        .values
+    )
+
+    if len(breaches) < 2:
+        return {
+            "lr_ind": np.nan,
+            "p_value": np.nan,
+            "result": "N/A",
+        }
+
+    previous = breaches[:-1]
+    current = breaches[1:]
+
+    n00 = int(
+        ((previous == 0) & (current == 0)).sum()
+    )
+
+    n01 = int(
+        ((previous == 0) & (current == 1)).sum()
+    )
+
+    n10 = int(
+        ((previous == 1) & (current == 0)).sum()
+    )
+
+    n11 = int(
+        ((previous == 1) & (current == 1)).sum()
+    )
+
+    denom_0 = n00 + n01
+    denom_1 = n10 + n11
+
+    if denom_0 == 0 or denom_1 == 0:
+        return {
+            "lr_ind": np.nan,
+            "p_value": np.nan,
+            "result": "Insufficient Data",
+        }
+
+    p01 = n01 / denom_0
+    p11 = n11 / denom_1
+
+    total_transitions = (
+        n00 + n01 + n10 + n11
+    )
+
+    p = (
+        n01 + n11
+    ) / total_transitions
+
+    # Independence null
+    log_l0 = (
+        log_likelihood_term(
+            n00 + n10,
+            1 - p
+        )
+        + log_likelihood_term(
+            n01 + n11,
+            p
+        )
+    )
+
+    # First-order Markov alternative
+    log_l1 = (
+        log_likelihood_term(n00, 1 - p01)
+        + log_likelihood_term(n01, p01)
+        + log_likelihood_term(n10, 1 - p11)
+        + log_likelihood_term(n11, p11)
+    )
+
+    lr_ind = max(
+        0.0,
+        -2 * (log_l0 - log_l1)
+    )
+
+    p_value = math.erfc(
+        math.sqrt(lr_ind / 2)
+    )
+
+    return {
+        "lr_ind": lr_ind,
+        "p_value": p_value,
+        "result": (
+            "Pass"
+            if p_value >= 0.05
+            else "Reject"
+        ),
+    }
+
+def conditional_coverage_test(
+    kupiec_result: dict,
+    independence_result: dict
+) -> dict:
+
+    lr_uc = kupiec_result["lr_uc"]
+    lr_ind = independence_result["lr_ind"]
+
+    if (
+        np.isnan(lr_uc)
+        or np.isnan(lr_ind)
+    ):
+        return {
+            "lr_cc": np.nan,
+            "p_value": np.nan,
+            "result": "N/A",
+        }
+
+    lr_cc = lr_uc + lr_ind
+
+    # Chi-square with 2 degrees of freedom:
+    # survival function = exp(-x / 2)
+    p_value = math.exp(
+        -lr_cc / 2
+    )
+
+    return {
+        "lr_cc": lr_cc,
+        "p_value": p_value,
+        "result": (
+            "Pass"
+            if p_value >= 0.05
+            else "Reject"
+        ),
+    }
 
 
 
@@ -765,6 +979,80 @@ regime_validation_status = check_regime_ordering(
 
 var_backtest = calculate_var_backtest(data)
 
+# =========================================================
+# FORMAL VAR BACKTESTS
+# =========================================================
+
+kupiec_5 = kupiec_test(
+    data["exceed_5"],
+    alpha=0.05
+)
+
+independence_5 = (
+    christoffersen_independence_test(
+        data["exceed_5"]
+    )
+)
+
+conditional_5 = conditional_coverage_test(
+    kupiec_5,
+    independence_5
+)
+
+
+kupiec_1 = kupiec_test(
+    data["exceed_1"],
+    alpha=0.01
+)
+
+independence_1 = (
+    christoffersen_independence_test(
+        data["exceed_1"]
+    )
+)
+
+conditional_1 = conditional_coverage_test(
+    kupiec_1,
+    independence_1
+)
+
+formal_var_tests = pd.DataFrame({
+    "VaR Level": [
+        "5%",
+        "1%",
+    ],
+
+    "Kupiec p-value": [
+        kupiec_5["p_value"],
+        kupiec_1["p_value"],
+    ],
+
+    "Coverage": [
+        kupiec_5["result"],
+        kupiec_1["result"],
+    ],
+
+    "Independence p-value": [
+        independence_5["p_value"],
+        independence_1["p_value"],
+    ],
+
+    "Independence": [
+        independence_5["result"],
+        independence_1["result"],
+    ],
+
+    "Conditional Coverage p-value": [
+        conditional_5["p_value"],
+        conditional_1["p_value"],
+    ],
+
+    "Overall": [
+        conditional_5["result"],
+        conditional_1["result"],
+    ],
+})
+
 calibration_5 = interpret_var_calibration(
     var_backtest["rate_5"],
     0.05
@@ -1015,6 +1303,35 @@ else:
             "Live price is displayed separately but is not included "
             "in return or risk calculations."
         )
+
+st.markdown("#### Statistical VaR Backtesting")
+
+st.dataframe(
+    formal_var_tests.style.format({
+        "Kupiec p-value": "{:.3f}",
+        "Independence p-value": "{:.3f}",
+        "Conditional Coverage p-value": "{:.3f}",
+    }),
+    use_container_width=True,
+    hide_index=True,
+)
+
+if (
+    conditional_5["result"] == "Pass"
+    and conditional_1["result"] == "Pass"
+):
+    st.success(
+        "Formal VaR backtesting passed at both confidence levels: "
+        "the models show acceptable unconditional coverage and "
+        "breach independence under the combined conditional coverage test."
+    )
+
+else:
+    st.warning(
+        "At least one VaR model fails the formal conditional coverage test. "
+        "Review exceedance frequency and breach clustering before interpreting "
+        "the model as fully calibrated."
+    )
 
 # =========================================================
 # RISK INTELLIGENCE
