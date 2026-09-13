@@ -580,7 +580,9 @@ if data.empty:
 # SIDEBAR
 # =========================================================
 st.sidebar.header("Dashboard Controls")
-
+CoinGecko Feed: LIVE
+Historical Backfill: CURRENT
+Risk Engine: LIVE
 view_range = st.sidebar.selectbox(
     "Date Range",
     ["Last 6M", "Last 1Y", "Last 2Y", "Last 5Y", "Full History"],
