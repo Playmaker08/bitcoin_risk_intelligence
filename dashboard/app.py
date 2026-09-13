@@ -315,7 +315,7 @@ def calculate_var_backtest(df: pd.DataFrame) -> dict:
         "rate_1": breaches_1 / n,
     }
 
-    def interpret_var_calibration(
+def interpret_var_calibration(
     observed_rate: float,
     expected_rate: float,
     tolerance: float = 0.25
