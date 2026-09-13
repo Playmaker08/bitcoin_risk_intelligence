@@ -519,7 +519,7 @@ es_delta = latest_change(data[selected_es], periods=1)
 
 with kpi1:
     st.metric(
-        ""BTC Price"",
+        "BTC Price",
         f"${latest['Close']:,.0f}",
         None if price_delta is None else f"{price_delta:,.0f}"
     )
