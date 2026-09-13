@@ -189,15 +189,17 @@ DATA_PATH = BASE_DIR / "data" / "btc_daily.csv"
 
 
 @st.cache_data(show_spinner=False)
-def load_and_prepare_data(csv_path: Path) -> pd.DataFrame:
+def load_historical_data(csv_path: Path) -> pd.DataFrame:
+    """
+    Load and clean historical daily Bitcoin data.
+    """
+
     if not csv_path.exists():
         st.error(f"Data file not found: {csv_path}")
         st.stop()
 
     df = pd.read_csv(csv_path)
 
-    # Expected columns in btc_daily.csv:
-    # date, Close, return_pct
     if "date" not in df.columns:
         st.error("btc_daily.csv must contain a 'date' column.")
         st.stop()
@@ -212,60 +214,201 @@ def load_and_prepare_data(csv_path: Path) -> pd.DataFrame:
     if "return_pct" not in df.columns:
         df["return_pct"] = df["Close"].pct_change() * 100
 
-    df = df.dropna().copy()
+    return df
 
-    # Rolling market metrics
-    df["vol_30d"] = df["return_pct"].rolling(30).std()
-    df["vol_60d"] = df["return_pct"].rolling(60).std()
+def append_live_observation(
+    df: pd.DataFrame,
+    live_market: dict
+) -> pd.DataFrame:
+    """
+    Append or update today's provisional Bitcoin observation
+    using the latest live CoinGecko price.
+    """
 
-    df["VaR_5"] = df["return_pct"].rolling(250).quantile(0.05)
-    df["VaR_1"] = df["return_pct"].rolling(250).quantile(0.01)
+    combined = df.copy()
 
-    df["ES_5"] = df["return_pct"].rolling(250).apply(
-        lambda x: historical_es(pd.Series(x), 0.05), raw=False
+    if live_market.get("status") != "live":
+        return combined
+
+    live_price = live_market.get("price")
+
+    if live_price is None:
+        return combined
+
+    # Use UTC date because CoinGecko timestamp is UTC
+    live_timestamp = live_market.get("last_updated")
+
+    if live_timestamp is not None:
+        today = pd.Timestamp(live_timestamp).tz_localize(None).normalize()
+    else:
+        today = pd.Timestamp.utcnow().tz_localize(None).normalize()
+
+    # Insert/update today's provisional close
+    combined.loc[today, "Close"] = float(live_price)
+
+    combined = combined.sort_index()
+
+    # Recalculate returns so today's return uses previous daily close
+    combined["return_pct"] = combined["Close"].pct_change() * 100
+
+    return combined
+
+def calculate_risk_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calculate volatility, historical VaR, Expected Shortfall,
+    exceedances, and composite risk regimes.
+    """
+
+    risk_df = df.copy()
+
+    # -----------------------------------------------------
+    # VOLATILITY
+    # -----------------------------------------------------
+
+    risk_df["vol_30d"] = (
+        risk_df["return_pct"]
+        .rolling(30)
+        .std()
     )
-    df["ES_1"] = df["return_pct"].rolling(250).apply(
-        lambda x: historical_es(pd.Series(x), 0.01), raw=False
+
+    risk_df["vol_60d"] = (
+        risk_df["return_pct"]
+        .rolling(60)
+        .std()
     )
 
-    # Risk regime inputs
-    df["vol_score"] = df["vol_30d"]
-    df["var_score"] = -df["VaR_5"]
-    df["es_score"] = -df["ES_5"]
+    # -----------------------------------------------------
+    # VALUE AT RISK
+    # -----------------------------------------------------
 
-    regime_df = df.dropna().copy()
-
-    regime_df["vol_pct"] = regime_df["vol_score"].rank(pct=True)
-    regime_df["var_pct"] = regime_df["var_score"].rank(pct=True)
-    regime_df["es_pct"] = regime_df["es_score"].rank(pct=True)
-
-    regime_df["risk_score"] = (
-        0.4 * regime_df["vol_pct"] +
-        0.3 * regime_df["var_pct"] +
-        0.3 * regime_df["es_pct"]
+    risk_df["VaR_5"] = (
+        risk_df["return_pct"]
+        .rolling(250)
+        .quantile(0.05)
     )
 
-    regime_df["risk_regime"] = regime_df["risk_score"].apply(classify_regime)
+    risk_df["VaR_1"] = (
+        risk_df["return_pct"]
+        .rolling(250)
+        .quantile(0.01)
+    )
+
+    # -----------------------------------------------------
+    # EXPECTED SHORTFALL
+    # -----------------------------------------------------
+
+    risk_df["ES_5"] = (
+        risk_df["return_pct"]
+        .rolling(250)
+        .apply(
+            lambda x: historical_es(pd.Series(x), 0.05),
+            raw=False
+        )
+    )
+
+    risk_df["ES_1"] = (
+        risk_df["return_pct"]
+        .rolling(250)
+        .apply(
+            lambda x: historical_es(pd.Series(x), 0.01),
+            raw=False
+        )
+    )
+
+    # -----------------------------------------------------
+    # RISK SCORE INPUTS
+    # -----------------------------------------------------
+
+    risk_df["vol_score"] = risk_df["vol_30d"]
+
+    # VaR / ES are negative.
+    # More negative = greater downside risk.
+    risk_df["var_score"] = -risk_df["VaR_5"]
+    risk_df["es_score"] = -risk_df["ES_5"]
+
+    risk_df = risk_df.dropna().copy()
+
+    # -----------------------------------------------------
+    # HISTORICAL PERCENTILE RANKING
+    # -----------------------------------------------------
+
+    risk_df["vol_pct"] = risk_df["vol_score"].rank(pct=True)
+    risk_df["var_pct"] = risk_df["var_score"].rank(pct=True)
+    risk_df["es_pct"] = risk_df["es_score"].rank(pct=True)
+
+    # -----------------------------------------------------
+    # COMPOSITE RISK SCORE
+    # -----------------------------------------------------
+
+    risk_df["risk_score"] = (
+        0.40 * risk_df["vol_pct"]
+        + 0.30 * risk_df["var_pct"]
+        + 0.30 * risk_df["es_pct"]
+    )
+
+    risk_df["risk_regime"] = (
+        risk_df["risk_score"]
+        .apply(classify_regime)
+    )
 
     regime_map = {
         "Low Risk": 1,
         "Moderate Risk": 2,
         "High Risk": 3,
-        "Extreme Risk": 4
+        "Extreme Risk": 4,
     }
-    regime_df["regime_code"] = regime_df["risk_regime"].map(regime_map)
 
-    regime_df["exceed_5"] = regime_df["return_pct"] < regime_df["VaR_5"]
-    regime_df["exceed_1"] = regime_df["return_pct"] < regime_df["VaR_1"]
+    risk_df["regime_code"] = (
+        risk_df["risk_regime"]
+        .map(regime_map)
+    )
 
-    return regime_df
+    # -----------------------------------------------------
+    # VAR EXCEEDANCES
+    # -----------------------------------------------------
+
+    risk_df["exceed_5"] = (
+        risk_df["return_pct"] < risk_df["VaR_5"]
+    )
+
+    risk_df["exceed_1"] = (
+        risk_df["return_pct"] < risk_df["VaR_1"]
+    )
+
+    return risk_df
+
+# =========================================================
+# BUILD ANALYTICS PIPELINE
+# =========================================================
+
+historical_data = load_historical_data(DATA_PATH)
+
+if historical_data.empty:
+    st.error("No historical data available.")
+    st.stop()
 
 
-data = load_and_prepare_data(DATA_PATH)
+# Fetch live CoinGecko market data
+live_market = get_live_btc_market_data()
+
+
+# Combine historical + current live observation
+combined_data = append_live_observation(
+    historical_data,
+    live_market
+)
+
+
+# Run risk analytics engine
+data = calculate_risk_metrics(
+    combined_data
+)
+
 
 if data.empty:
-    st.error("No data available after preprocessing.")
+    st.error("No data available after risk calculations.")
     st.stop()
+
 # =========================================================
 # LIVE MARKET DATA
 # =========================================================
@@ -376,7 +519,7 @@ es_delta = latest_change(data[selected_es], periods=1)
 
 with kpi1:
     st.metric(
-        "Historical Close",
+        ""BTC Price"",
         f"${latest['Close']:,.0f}",
         None if price_delta is None else f"{price_delta:,.0f}"
     )
@@ -409,7 +552,12 @@ with kpi5:
 
 st.info(risk_interpretation(latest))
 
-
+if live_market["status"] == "live":
+    st.caption(
+        "Risk metrics include the latest live BTC price as a "
+        "provisional daily observation. Historical VaR and ES "
+        "use a rolling 250-day return window."
+    )
 # =========================================================
 # MARKET OVERVIEW
 # =========================================================
