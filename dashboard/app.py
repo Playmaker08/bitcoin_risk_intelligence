@@ -182,8 +182,9 @@ def latest_change(series: pd.Series, periods: int = 1):
 
 
 # =========================================================
-# LOAD DATA
+# DATA PIPELINE
 # =========================================================
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_PATH = BASE_DIR / "data" / "btc_daily.csv"
 
@@ -211,17 +212,18 @@ def load_historical_data(csv_path: Path) -> pd.DataFrame:
     df["date"] = pd.to_datetime(df["date"])
     df = df.set_index("date").sort_index()
 
-    if "return_pct" not in df.columns:
-        df["return_pct"] = df["Close"].pct_change() * 100
+    # Always recalculate returns to guarantee consistency
+    df["return_pct"] = df["Close"].pct_change() * 100
 
     return df
+
 
 def append_live_observation(
     df: pd.DataFrame,
     live_market: dict
 ) -> pd.DataFrame:
     """
-    Append or update today's provisional Bitcoin observation
+    Append or update today's provisional Bitcoin close
     using the latest live CoinGecko price.
     """
 
@@ -235,34 +237,42 @@ def append_live_observation(
     if live_price is None:
         return combined
 
-    # Use UTC date because CoinGecko timestamp is UTC
     live_timestamp = live_market.get("last_updated")
 
     if live_timestamp is not None:
-        today = pd.Timestamp(live_timestamp).tz_localize(None).normalize()
+        today = (
+            pd.Timestamp(live_timestamp)
+            .tz_localize(None)
+            .normalize()
+        )
     else:
-        today = pd.Timestamp.utcnow().tz_localize(None).normalize()
+        today = (
+            pd.Timestamp.utcnow()
+            .tz_localize(None)
+            .normalize()
+        )
 
-    # Insert/update today's provisional close
+    # Add/update today's provisional close
     combined.loc[today, "Close"] = float(live_price)
 
     combined = combined.sort_index()
 
-    # Recalculate returns so today's return uses previous daily close
+    # Recalculate returns after live observation is inserted
     combined["return_pct"] = combined["Close"].pct_change() * 100
 
     return combined
 
+
 def calculate_risk_metrics(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Calculate volatility, historical VaR, Expected Shortfall,
-    exceedances, and composite risk regimes.
+    Calculate rolling volatility, historical VaR,
+    Expected Shortfall, exceedances, and risk regimes.
     """
 
     risk_df = df.copy()
 
     # -----------------------------------------------------
-    # VOLATILITY
+    # REALIZED VOLATILITY
     # -----------------------------------------------------
 
     risk_df["vol_30d"] = (
@@ -278,7 +288,7 @@ def calculate_risk_metrics(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     # -----------------------------------------------------
-    # VALUE AT RISK
+    # HISTORICAL VALUE AT RISK
     # -----------------------------------------------------
 
     risk_df["VaR_5"] = (
@@ -321,20 +331,31 @@ def calculate_risk_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
     risk_df["vol_score"] = risk_df["vol_30d"]
 
-    # VaR / ES are negative.
-    # More negative = greater downside risk.
+    # VaR and ES are negative:
+    # more negative = more downside risk
     risk_df["var_score"] = -risk_df["VaR_5"]
     risk_df["es_score"] = -risk_df["ES_5"]
 
     risk_df = risk_df.dropna().copy()
 
     # -----------------------------------------------------
-    # HISTORICAL PERCENTILE RANKING
+    # HISTORICAL PERCENTILE RANKS
     # -----------------------------------------------------
 
-    risk_df["vol_pct"] = risk_df["vol_score"].rank(pct=True)
-    risk_df["var_pct"] = risk_df["var_score"].rank(pct=True)
-    risk_df["es_pct"] = risk_df["es_score"].rank(pct=True)
+    risk_df["vol_pct"] = (
+        risk_df["vol_score"]
+        .rank(pct=True)
+    )
+
+    risk_df["var_pct"] = (
+        risk_df["var_score"]
+        .rank(pct=True)
+    )
+
+    risk_df["es_pct"] = (
+        risk_df["es_score"]
+        .rank(pct=True)
+    )
 
     # -----------------------------------------------------
     # COMPOSITE RISK SCORE
@@ -377,6 +398,7 @@ def calculate_risk_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
     return risk_df
 
+
 # =========================================================
 # BUILD ANALYTICS PIPELINE
 # =========================================================
@@ -388,32 +410,60 @@ if historical_data.empty:
     st.stop()
 
 
-# Fetch live CoinGecko market data
+# Fetch current market observation
 live_market = get_live_btc_market_data()
 
 
-# Combine historical + current live observation
-combined_data = append_live_observation(
-    historical_data,
-    live_market
-)
+# ---------------------------------------------------------
+# DATA FRESHNESS CHECK
+# ---------------------------------------------------------
+
+historical_end = historical_data.index.max()
+
+if live_market.get("last_updated") is not None:
+    live_date = (
+        pd.Timestamp(live_market["last_updated"])
+        .tz_localize(None)
+        .normalize()
+    )
+else:
+    live_date = (
+        pd.Timestamp.utcnow()
+        .tz_localize(None)
+        .normalize()
+    )
 
 
-# Run risk analytics engine
-data = calculate_risk_metrics(
-    combined_data
-)
+gap_days = (live_date - historical_end.normalize()).days
+
+
+# ---------------------------------------------------------
+# HYBRID HISTORICAL + LIVE DATA
+# ---------------------------------------------------------
+
+if gap_days <= 1:
+    combined_data = append_live_observation(
+        historical_data,
+        live_market
+    )
+
+    live_risk_enabled = (
+        live_market.get("status") == "live"
+    )
+
+else:
+    # Do not treat a stale historical close as yesterday's close
+    combined_data = historical_data.copy()
+    live_risk_enabled = False
+
+
+# Run risk analytics
+data = calculate_risk_metrics(combined_data)
 
 
 if data.empty:
     st.error("No data available after risk calculations.")
     st.stop()
-
-# =========================================================
-# LIVE MARKET DATA
-# =========================================================
-
-live_market = get_live_btc_market_data()
 
 # =========================================================
 # SIDEBAR
@@ -433,6 +483,25 @@ tail_level = st.sidebar.selectbox(
 )
 
 show_exceedances = st.sidebar.checkbox("Highlight Exceedances", value=True)
+st.sidebar.markdown("---")
+st.sidebar.subheader("Data Status")
+
+if live_market.get("status") == "live":
+    st.sidebar.success("CoinGecko Feed: LIVE")
+else:
+    st.sidebar.error("CoinGecko Feed: OFFLINE")
+
+
+if live_risk_enabled:
+    st.sidebar.success("Risk Engine: LIVE")
+else:
+    st.sidebar.warning("Risk Engine: HISTORICAL")
+
+
+st.sidebar.caption(
+    f"Historical data through: "
+    f"{historical_end.strftime('%Y-%m-%d')}"
+)
 
 display_df = filter_by_range(data, view_range)
 latest = data.iloc[-1]
@@ -447,7 +516,11 @@ selected_exceed = "exceed_5" if tail_level == "5%" else "exceed_1"
 # =========================================================
 st.title("Bitcoin Risk Intelligence Dashboard")
 st.markdown(
-    "<div class='section-note'>A dynamic risk-monitoring dashboard built from historical Bitcoin price data, volatility analysis, VaR, Expected Shortfall, and regime classification.</div>",
+    "<div class='section-note'>"
+    "A live-updated Bitcoin market risk platform combining historical "
+    "price data with live market observations, volatility analysis, "
+    "Value-at-Risk, Expected Shortfall, and regime classification."
+    "</div>",
     unsafe_allow_html=True
 )
 
@@ -519,7 +592,7 @@ es_delta = latest_change(data[selected_es], periods=1)
 
 with kpi1:
     st.metric(
-        "BTC Price",
+        "BTC Price" if live_risk_enabled else "Historical Close",
         f"${latest['Close']:,.0f}",
         None if price_delta is None else f"{price_delta:,.0f}"
     )
@@ -552,12 +625,32 @@ with kpi5:
 
 st.info(risk_interpretation(latest))
 
-if live_market["status"] == "live":
-    st.caption(
-        "Risk metrics include the latest live BTC price as a "
-        "provisional daily observation. Historical VaR and ES "
-        "use a rolling 250-day return window."
+if live_risk_enabled:
+    st.success(
+        "Live risk engine active — the latest CoinGecko BTC price "
+        "is incorporated as today's provisional observation."
     )
+
+    st.caption(
+        "Volatility, VaR, Expected Shortfall, and risk regime "
+        "are recalculated using the latest provisional daily BTC price."
+    )
+
+else:
+    if live_market.get("status") != "live":
+        st.warning(
+            "Live market feed is unavailable. "
+            "Risk analytics are based on historical observations."
+        )
+
+    elif gap_days > 1:
+        st.warning(
+            f"Live risk engine disabled because the historical dataset "
+            f"is {gap_days} days behind the live market date. "
+            "Live price is displayed separately but is not included "
+            "in return or risk calculations."
+        )
+
 # =========================================================
 # MARKET OVERVIEW
 # =========================================================
@@ -789,9 +882,13 @@ st.markdown("---")
 st.markdown(
     """
 **Methodology Notes**
-- Daily BTC prices are loaded from a deployment-friendly daily dataset.
-- Rolling volatility is computed using 30-day and 60-day realized volatility.
+
+- Historical daily BTC prices provide the long-run analytical base.
+- When the historical dataset is current, the latest CoinGecko price is inserted as a provisional daily observation.
+- Daily returns are recalculated after the live observation is incorporated.
+- Rolling volatility is estimated over 30-day and 60-day windows.
 - VaR and Expected Shortfall are estimated from 250-day rolling historical returns.
-- Regime classification is based on a composite risk score using volatility, VaR, and ES percentiles.
+- Risk regimes are derived from a composite percentile score using volatility, VaR, and Expected Shortfall.
+- If historical data are stale, live market data remain visible but are excluded from risk calculations to prevent invalid multi-day returns from being treated as one-day returns.
 """
 )
