@@ -8,7 +8,10 @@ import pandas as pd
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
-from market_data import get_live_btc_market_data
+from market_data import (
+    get_live_btc_market_data,
+    get_historical_btc_data,
+)
 
 # =========================================================
 # PAGE CONFIG
@@ -400,80 +403,16 @@ def calculate_risk_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # =========================================================
-# BUILD ANALYTICS PIPELINE
+# HISTORICAL BACKFILL
 # =========================================================
-
-historical_data = load_historical_data(DATA_PATH)
-
-historical_end = (
-    historical_data.index
-    .max()
-    .normalize()
-)
-
-today_utc = (
-    pd.Timestamp.utcnow()
-    .tz_localize(None)
-    .normalize()
-)
-
-gap_days = (
-    today_utc - historical_end
-).days
-
-
-# Backfill missing historical observations
-updated_history = backfill_missing_history(
-    historical_data,
-    gap_days
-)
-
-
-# Fetch live market snapshot
-live_market = get_live_btc_market_data()
-
-
-# Add today's provisional observation
-combined_data = append_live_observation(
-    updated_history,
-    live_market
-)
-
-
-# Run risk engine
-data = calculate_risk_metrics(
-    combined_data
-)
-
-
-live_risk_enabled = (
-    live_market.get("status") == "live"
-    and len(updated_history) > len(historical_data)
-)
-
-if historical_data.empty:
-    st.error("No historical data available.")
-    st.stop()
-
-historical_end = historical_data.index.max().normalize()
-
-today_utc = (
-    pd.Timestamp.utcnow()
-    .tz_localize(None)
-    .normalize()
-)
-
-gap_days = (today_utc - historical_end).days
-
-from market_data import (
-    get_live_btc_market_data,
-    get_historical_btc_data,
-)
 
 def backfill_missing_history(
     historical_df: pd.DataFrame,
     gap_days: int
 ) -> pd.DataFrame:
+    """
+    Backfill missing daily BTC prices using CoinGecko historical data.
+    """
 
     if gap_days <= 1:
         return historical_df.copy()
@@ -493,9 +432,9 @@ def backfill_missing_history(
     ])
 
     combined = (
-        combined[~combined.index.duplicated(
-            keep="last"
-        )]
+        combined[
+            ~combined.index.duplicated(keep="last")
+        ]
         .sort_index()
     )
 
@@ -506,15 +445,48 @@ def backfill_missing_history(
     )
 
     return combined
-# Fetch current market observation
-live_market = get_live_btc_market_data()
+
+
+# =========================================================
+# BUILD ANALYTICS PIPELINE
+# =========================================================
+
+historical_data = load_historical_data(DATA_PATH)
+
+if historical_data.empty:
+    st.error("No historical data available.")
+    st.stop()
 
 
 # ---------------------------------------------------------
-# DATA FRESHNESS CHECK
+# HISTORICAL DATA FRESHNESS
 # ---------------------------------------------------------
 
-historical_end = historical_data.index.max()
+historical_end = (
+    historical_data.index
+    .max()
+    .normalize()
+)
+
+today_utc = (
+    pd.Timestamp.utcnow()
+    .tz_localize(None)
+    .normalize()
+)
+
+gap_days = (
+    today_utc - historical_end
+).days
+
+
+# ---------------------------------------------------------
+# BACKFILL MISSING DAILY DATA
+# ---------------------------------------------------------
+
+updated_history = backfill_missing_history(
+    historical_data,
+    gap_days
+)
 
 updated_end = (
     updated_history.index
@@ -526,51 +498,41 @@ remaining_gap = (
     today_utc - updated_end
 ).days
 
-live_risk_enabled = (
+
+# ---------------------------------------------------------
+# LIVE MARKET SNAPSHOT
+# ---------------------------------------------------------
+
+live_market = get_live_btc_market_data()
+
+
+# ---------------------------------------------------------
+# BUILD HYBRID HISTORICAL + LIVE SERIES
+# ---------------------------------------------------------
+
+if (
     live_market.get("status") == "live"
     and remaining_gap <= 1
-)
-
-if live_market.get("last_updated") is not None:
-    live_date = (
-        pd.Timestamp(live_market["last_updated"])
-        .tz_localize(None)
-        .normalize()
-    )
-else:
-    live_date = (
-        pd.Timestamp.utcnow()
-        .tz_localize(None)
-        .normalize()
-    )
-
-
-gap_days = (live_date - historical_end.normalize()).days
-
-
-# ---------------------------------------------------------
-# HYBRID HISTORICAL + LIVE DATA
-# ---------------------------------------------------------
-
-if gap_days <= 1:
+):
     combined_data = append_live_observation(
-        historical_data,
+        updated_history,
         live_market
     )
 
-    live_risk_enabled = (
-        live_market.get("status") == "live"
-    )
+    live_risk_enabled = True
 
 else:
-    # Do not treat a stale historical close as yesterday's close
-    combined_data = historical_data.copy()
+    combined_data = updated_history.copy()
     live_risk_enabled = False
 
 
-# Run risk analytics
-data = calculate_risk_metrics(combined_data)
+# ---------------------------------------------------------
+# RUN RISK ENGINE
+# ---------------------------------------------------------
 
+data = calculate_risk_metrics(
+    combined_data
+)
 
 if data.empty:
     st.error("No data available after risk calculations.")
@@ -612,8 +574,8 @@ else:
 
 
 st.sidebar.caption(
-    f"Historical data through: "
-    f"{historical_end.strftime('%Y-%m-%d')}"
+    f"Risk data through: "
+    f"{updated_end.strftime('%Y-%m-%d')}"
 )
 
 display_df = filter_by_range(data, view_range)
