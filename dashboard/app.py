@@ -405,11 +405,107 @@ def calculate_risk_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
 historical_data = load_historical_data(DATA_PATH)
 
+historical_end = (
+    historical_data.index
+    .max()
+    .normalize()
+)
+
+today_utc = (
+    pd.Timestamp.utcnow()
+    .tz_localize(None)
+    .normalize()
+)
+
+gap_days = (
+    today_utc - historical_end
+).days
+
+
+# Backfill missing historical observations
+updated_history = backfill_missing_history(
+    historical_data,
+    gap_days
+)
+
+
+# Fetch live market snapshot
+live_market = get_live_btc_market_data()
+
+
+# Add today's provisional observation
+combined_data = append_live_observation(
+    updated_history,
+    live_market
+)
+
+
+# Run risk engine
+data = calculate_risk_metrics(
+    combined_data
+)
+
+
+live_risk_enabled = (
+    live_market.get("status") == "live"
+    and len(updated_history) > len(historical_data)
+)
+
 if historical_data.empty:
     st.error("No historical data available.")
     st.stop()
 
+historical_end = historical_data.index.max().normalize()
 
+today_utc = (
+    pd.Timestamp.utcnow()
+    .tz_localize(None)
+    .normalize()
+)
+
+gap_days = (today_utc - historical_end).days
+
+from market_data import (
+    get_live_btc_market_data,
+    get_historical_btc_data,
+)
+
+def backfill_missing_history(
+    historical_df: pd.DataFrame,
+    gap_days: int
+) -> pd.DataFrame:
+
+    if gap_days <= 1:
+        return historical_df.copy()
+
+    api_history = get_historical_btc_data(
+        days=gap_days + 2
+    )
+
+    if api_history.empty:
+        return historical_df.copy()
+
+    api_history = api_history.set_index("date")
+
+    combined = pd.concat([
+        historical_df[["Close"]],
+        api_history[["Close"]],
+    ])
+
+    combined = (
+        combined[~combined.index.duplicated(
+            keep="last"
+        )]
+        .sort_index()
+    )
+
+    combined["return_pct"] = (
+        combined["Close"]
+        .pct_change()
+        * 100
+    )
+
+    return combined
 # Fetch current market observation
 live_market = get_live_btc_market_data()
 
@@ -419,6 +515,21 @@ live_market = get_live_btc_market_data()
 # ---------------------------------------------------------
 
 historical_end = historical_data.index.max()
+
+updated_end = (
+    updated_history.index
+    .max()
+    .normalize()
+)
+
+remaining_gap = (
+    today_utc - updated_end
+).days
+
+live_risk_enabled = (
+    live_market.get("status") == "live"
+    and remaining_gap <= 1
+)
 
 if live_market.get("last_updated") is not None:
     live_date = (
@@ -469,6 +580,9 @@ if data.empty:
 # SIDEBAR
 # =========================================================
 st.sidebar.header("Dashboard Controls")
+CoinGecko Feed: LIVE
+Historical Backfill: CURRENT
+Risk Engine: LIVE
 
 view_range = st.sidebar.selectbox(
     "Date Range",
