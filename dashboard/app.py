@@ -775,55 +775,6 @@ calibration_1 = interpret_var_calibration(
     0.01
 )
 
-# =========================================================
-# REGIME VALIDATION
-# =========================================================
-
-st.subheader("Regime Validation")
-
-st.markdown(
-    "This section evaluates whether higher risk regimes correspond "
-    "to larger realized and forward-looking market risk."
-)
-
-st.dataframe(
-    regime_validation.style.format({
-        "avg_abs_return": "{:.3f}%",
-        "avg_vol_30d": "{:.3f}%",
-        "avg_forward_7d_abs_return": "{:.3f}%",
-        "avg_forward_7d_vol": "{:.3f}%",
-        "avg_es_5": "{:.3f}%",
-        "observations": "{:,.0f}",
-    }),
-    use_container_width=True
-)
-regime_plot_df = (
-    regime_validation
-    .reset_index()
-    .rename(columns={
-        "risk_regime": "Risk Regime",
-        "avg_forward_7d_vol": "Forward 7D Volatility"
-    })
-)
-
-fig_forward = px.bar(
-    regime_plot_df,
-    x="Risk Regime",
-    y="Forward 7D Volatility",
-    title="Forward 7-Day Volatility by Current Risk Regime"
-)
-
-apply_theme(fig_forward)
-
-st.plotly_chart(
-    fig_forward,
-    use_container_width=True
-)
-
-
-if data.empty:
-    st.error("No data available after risk calculations.")
-    st.stop()
 
 # =========================================================
 # SIDEBAR
