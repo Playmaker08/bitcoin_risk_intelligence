@@ -361,27 +361,7 @@ def check_regime_ordering(validation_df: pd.DataFrame) -> str:
 
     return "Mixed Separation"
 
-regime_validation_status = check_regime_ordering(
-    regime_validation
-)
 
-if regime_validation_status == "Strong Separation":
-    st.success(
-        "Regime validation: Strong Separation — higher current "
-        "risk regimes are associated with higher forward 7-day volatility."
-    )
-
-elif regime_validation_status == "Mixed Separation":
-    st.warning(
-        "Regime validation: Mixed Separation — the regime system "
-        "captures meaningful risk differences, but forward volatility "
-        "is not strictly monotonic across all regimes."
-    )
-
-else:
-    st.info(
-        "Regime validation: insufficient observations for a reliable comparison."
-    )
 
 # =========================================================
 # DATA PIPELINE
@@ -779,7 +759,9 @@ regime_validation = (
         "Extreme Risk",
     ])
 )
-
+regime_validation_status = check_regime_ordering(
+    regime_validation
+)
 
 var_backtest = calculate_var_backtest(data)
 
@@ -1328,6 +1310,72 @@ st.info(
     f"(observed breach rate "
     f"{var_backtest['rate_1']:.2%} vs nominal 1%)."
 )
+
+# =========================================================
+# REGIME VALIDATION
+# =========================================================
+
+st.subheader("Regime Validation")
+
+st.markdown(
+    "This section evaluates whether higher risk regimes correspond "
+    "to larger realized and forward-looking market risk."
+)
+
+st.dataframe(
+    regime_validation.style.format({
+        "avg_abs_return": "{:.3f}%",
+        "avg_vol_30d": "{:.3f}%",
+        "avg_forward_7d_abs_return": "{:.3f}%",
+        "avg_forward_7d_vol": "{:.3f}%",
+        "avg_es_5": "{:.3f}%",
+        "observations": "{:,.0f}",
+    }),
+    use_container_width=True
+)
+
+
+regime_plot_df = (
+    regime_validation
+    .reset_index()
+    .rename(columns={
+        "risk_regime": "Risk Regime",
+        "avg_forward_7d_vol": "Forward 7D Volatility"
+    })
+)
+
+fig_forward = px.bar(
+    regime_plot_df,
+    x="Risk Regime",
+    y="Forward 7D Volatility",
+    title="Forward 7-Day Volatility by Current Risk Regime"
+)
+
+apply_theme(fig_forward)
+
+st.plotly_chart(
+    fig_forward,
+    use_container_width=True
+)
+
+
+if regime_validation_status == "Strong Separation":
+    st.success(
+        "Regime validation: Strong Separation — higher current "
+        "risk regimes are associated with higher forward 7-day volatility."
+    )
+
+elif regime_validation_status == "Mixed Separation":
+    st.warning(
+        "Regime validation: Mixed Separation — the regime system "
+        "captures meaningful risk differences, but forward volatility "
+        "is not strictly monotonic across all regimes."
+    )
+
+else:
+    st.info(
+        "Regime validation: insufficient observations for a reliable comparison."
+    )
 
 # =========================================================
 # REGIME SECTION
