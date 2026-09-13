@@ -183,6 +183,25 @@ def latest_change(series: pd.Series, periods: int = 1):
         return None
     return clean.iloc[-1] - clean.iloc[-1 - periods]
 
+def causal_percentile_rank(
+    series: pd.Series,
+    min_periods: int = 250
+) -> pd.Series:
+    """
+    Percentile rank of each observation using only information
+    available up to that date.
+
+    No future observations are used.
+    """
+
+    return (
+        series
+        .expanding(min_periods=min_periods)
+        .apply(
+            lambda x: np.mean(x <= x[-1]),
+            raw=True
+        )
+    )
 
 # =========================================================
 # DATA PIPELINE
@@ -329,77 +348,84 @@ def calculate_risk_metrics(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     # -----------------------------------------------------
-    # RISK SCORE INPUTS
-    # -----------------------------------------------------
+# RISK SCORE INPUTS
+# -----------------------------------------------------
 
-    risk_df["vol_score"] = risk_df["vol_30d"]
+risk_df["vol_score"] = risk_df["vol_30d"]
 
-    # VaR and ES are negative:
-    # more negative = more downside risk
-    risk_df["var_score"] = -risk_df["VaR_5"]
-    risk_df["es_score"] = -risk_df["ES_5"]
+# VaR and ES are negative.
+# More negative = greater downside risk.
+risk_df["var_score"] = -risk_df["VaR_5"]
+risk_df["es_score"] = -risk_df["ES_5"]
 
-    risk_df = risk_df.dropna().copy()
+risk_df = risk_df.dropna().copy()
 
-    # -----------------------------------------------------
-    # HISTORICAL PERCENTILE RANKS
-    # -----------------------------------------------------
 
-    risk_df["vol_pct"] = (
-        risk_df["vol_score"]
-        .rank(pct=True)
-    )
+# -----------------------------------------------------
+# CAUSAL HISTORICAL PERCENTILE RANKS
+# -----------------------------------------------------
 
-    risk_df["var_pct"] = (
-        risk_df["var_score"]
-        .rank(pct=True)
-    )
+risk_df["vol_pct"] = causal_percentile_rank(
+    risk_df["vol_score"],
+    min_periods=250
+)
 
-    risk_df["es_pct"] = (
-        risk_df["es_score"]
-        .rank(pct=True)
-    )
+risk_df["var_pct"] = causal_percentile_rank(
+    risk_df["var_score"],
+    min_periods=250
+)
 
-    # -----------------------------------------------------
-    # COMPOSITE RISK SCORE
-    # -----------------------------------------------------
+risk_df["es_pct"] = causal_percentile_rank(
+    risk_df["es_score"],
+    min_periods=250
+)
 
-    risk_df["risk_score"] = (
-        0.40 * risk_df["vol_pct"]
-        + 0.30 * risk_df["var_pct"]
-        + 0.30 * risk_df["es_pct"]
-    )
+risk_df = risk_df.dropna(
+    subset=["vol_pct", "var_pct", "es_pct"]
+).copy()
 
-    risk_df["risk_regime"] = (
-        risk_df["risk_score"]
-        .apply(classify_regime)
-    )
 
-    regime_map = {
-        "Low Risk": 1,
-        "Moderate Risk": 2,
-        "High Risk": 3,
-        "Extreme Risk": 4,
-    }
+# -----------------------------------------------------
+# COMPOSITE RISK SCORE
+# -----------------------------------------------------
 
-    risk_df["regime_code"] = (
-        risk_df["risk_regime"]
-        .map(regime_map)
-    )
+risk_df["risk_score"] = (
+    0.40 * risk_df["vol_pct"]
+    + 0.30 * risk_df["var_pct"]
+    + 0.30 * risk_df["es_pct"]
+)
 
-    # -----------------------------------------------------
-    # VAR EXCEEDANCES
-    # -----------------------------------------------------
+risk_df["risk_regime"] = (
+    risk_df["risk_score"]
+    .apply(classify_regime)
+)
 
-    risk_df["exceed_5"] = (
-        risk_df["return_pct"] < risk_df["VaR_5"]
-    )
+regime_map = {
+    "Low Risk": 1,
+    "Moderate Risk": 2,
+    "High Risk": 3,
+    "Extreme Risk": 4,
+}
 
-    risk_df["exceed_1"] = (
-        risk_df["return_pct"] < risk_df["VaR_1"]
-    )
+risk_df["regime_code"] = (
+    risk_df["risk_regime"]
+    .map(regime_map)
+)
 
-    return risk_df
+
+# -----------------------------------------------------
+# VAR EXCEEDANCES
+# -----------------------------------------------------
+
+risk_df["exceed_5"] = (
+    risk_df["return_pct"] < risk_df["VaR_5"]
+)
+
+risk_df["exceed_1"] = (
+    risk_df["return_pct"] < risk_df["VaR_1"]
+)
+
+return risk_df
 
 
 # =========================================================
@@ -960,7 +986,7 @@ st.markdown(
 - Daily returns are recalculated after the live observation is incorporated.
 - Rolling volatility is estimated over 30-day and 60-day windows.
 - VaR and Expected Shortfall are estimated from 250-day rolling historical returns.
-- Risk regimes are derived from a composite percentile score using volatility, VaR, and Expected Shortfall.
+- Risk regimes are derived from a causal composite percentile score using volatility, VaR, and Expected Shortfall; each observation is ranked only against information available up to that date.
 - If historical data are stale, live market data remain visible but are excluded from risk calculations to prevent invalid multi-day returns from being treated as one-day returns.
 """
 )
