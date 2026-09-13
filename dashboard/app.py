@@ -348,84 +348,84 @@ def calculate_risk_metrics(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     # -----------------------------------------------------
-# RISK SCORE INPUTS
-# -----------------------------------------------------
+    # RISK SCORE INPUTS
+    # -----------------------------------------------------
 
-risk_df["vol_score"] = risk_df["vol_30d"]
+    risk_df["vol_score"] = risk_df["vol_30d"]
 
-# VaR and ES are negative.
-# More negative = greater downside risk.
-risk_df["var_score"] = -risk_df["VaR_5"]
-risk_df["es_score"] = -risk_df["ES_5"]
+    # VaR and ES are negative.
+    # More negative = greater downside risk.
+    risk_df["var_score"] = -risk_df["VaR_5"]
+    risk_df["es_score"] = -risk_df["ES_5"]
 
-risk_df = risk_df.dropna().copy()
-
-
-# -----------------------------------------------------
-# CAUSAL HISTORICAL PERCENTILE RANKS
-# -----------------------------------------------------
-
-risk_df["vol_pct"] = causal_percentile_rank(
-    risk_df["vol_score"],
-    min_periods=250
-)
-
-risk_df["var_pct"] = causal_percentile_rank(
-    risk_df["var_score"],
-    min_periods=250
-)
-
-risk_df["es_pct"] = causal_percentile_rank(
-    risk_df["es_score"],
-    min_periods=250
-)
-
-risk_df = risk_df.dropna(
-    subset=["vol_pct", "var_pct", "es_pct"]
-).copy()
+    risk_df = risk_df.dropna().copy()
 
 
-# -----------------------------------------------------
-# COMPOSITE RISK SCORE
-# -----------------------------------------------------
+    # -----------------------------------------------------
+    # CAUSAL HISTORICAL PERCENTILE RANKS
+    # -----------------------------------------------------
 
-risk_df["risk_score"] = (
-    0.40 * risk_df["vol_pct"]
-    + 0.30 * risk_df["var_pct"]
-    + 0.30 * risk_df["es_pct"]
-)
+    risk_df["vol_pct"] = causal_percentile_rank(
+        risk_df["vol_score"],
+        min_periods=250
+    )
 
-risk_df["risk_regime"] = (
-    risk_df["risk_score"]
-    .apply(classify_regime)
-)
+    risk_df["var_pct"] = causal_percentile_rank(
+        risk_df["var_score"],
+        min_periods=250
+    )
 
-regime_map = {
-    "Low Risk": 1,
-    "Moderate Risk": 2,
-    "High Risk": 3,
-    "Extreme Risk": 4,
-}
+    risk_df["es_pct"] = causal_percentile_rank(
+        risk_df["es_score"],
+        min_periods=250
+    )
 
-risk_df["regime_code"] = (
-    risk_df["risk_regime"]
-    .map(regime_map)
-)
+    risk_df = risk_df.dropna(
+        subset=["vol_pct", "var_pct", "es_pct"]
+    ).copy()
 
 
-# -----------------------------------------------------
-# VAR EXCEEDANCES
-# -----------------------------------------------------
+    # -----------------------------------------------------
+    # COMPOSITE RISK SCORE
+    # -----------------------------------------------------
 
-risk_df["exceed_5"] = (
-    risk_df["return_pct"] < risk_df["VaR_5"]
-)
+    risk_df["risk_score"] = (
+        0.40 * risk_df["vol_pct"]
+        + 0.30 * risk_df["var_pct"]
+        + 0.30 * risk_df["es_pct"]
+    )
 
-risk_df["exceed_1"] = (
-    risk_df["return_pct"] < risk_df["VaR_1"]
-)
+    risk_df["risk_regime"] = (
+        risk_df["risk_score"]
+        .apply(classify_regime)
+    )
 
-return risk_df
+    regime_map = {
+        "Low Risk": 1,
+        "Moderate Risk": 2,
+        "High Risk": 3,
+        "Extreme Risk": 4,
+    }
+
+    risk_df["regime_code"] = (
+        risk_df["risk_regime"]
+        .map(regime_map)
+    )
+
+
+    # -----------------------------------------------------
+    # VAR EXCEEDANCES
+    # -----------------------------------------------------
+
+    risk_df["exceed_5"] = (
+        risk_df["return_pct"] < risk_df["VaR_5"]
+    )
+
+    risk_df["exceed_1"] = (
+        risk_df["return_pct"] < risk_df["VaR_1"]
+    )
+
+    return risk_df
 
 
 # =========================================================
