@@ -575,6 +575,47 @@ def conditional_coverage_test(
         ),
     }
 
+def calculate_breach_clusters(
+    exceedances: pd.Series
+) -> dict:
+    """
+    Analyze temporal clustering of VaR exceedances.
+    """
+
+    x = (
+        exceedances
+        .dropna()
+        .astype(bool)
+    )
+
+    breach_dates = x[x].index
+
+    if len(breach_dates) < 2:
+        return {
+            "avg_gap": np.nan,
+            "median_gap": np.nan,
+            "min_gap": np.nan,
+            "clustered_pairs": 0,
+            "total_breaches": len(breach_dates),
+        }
+
+    gaps = (
+        breach_dates
+        .to_series()
+        .diff()
+        .dt.days
+        .dropna()
+    )
+
+    return {
+        "avg_gap": gaps.mean(),
+        "median_gap": gaps.median(),
+        "min_gap": gaps.min(),
+        "clustered_pairs": int(
+            (gaps <= 5).sum()
+        ),
+        "total_breaches": len(breach_dates),
+    }
 
 
 # =========================================================
@@ -1063,6 +1104,17 @@ calibration_1 = interpret_var_calibration(
     0.01
 )
 
+# =========================================================
+# EXCEEDANCE CLUSTERING DIAGNOSTICS
+# =========================================================
+
+cluster_5 = calculate_breach_clusters(
+    data["exceed_5"]
+)
+
+cluster_1 = calculate_breach_clusters(
+    data["exceed_1"]
+)
 
 # =========================================================
 # SIDEBAR
@@ -1579,6 +1631,107 @@ st.info(
     f"{var_backtest['rate_1']:.2%} vs nominal 1%)."
 )
 
+st.markdown("#### Exceedance Clustering Diagnostics")
+
+cluster_col1, cluster_col2, cluster_col3, cluster_col4 = st.columns(4)
+
+
+with cluster_col1:
+    st.metric(
+        "Avg Gap Between 5% Breaches",
+        "N/A"
+        if np.isnan(cluster_5["avg_gap"])
+        else f"{cluster_5['avg_gap']:.1f} days"
+    )
+
+
+with cluster_col2:
+    st.metric(
+        "Median Gap",
+        "N/A"
+        if np.isnan(cluster_5["median_gap"])
+        else f"{cluster_5['median_gap']:.1f} days"
+    )
+
+
+with cluster_col3:
+    st.metric(
+        "Minimum Gap",
+        "N/A"
+        if np.isnan(cluster_5["min_gap"])
+        else f"{cluster_5['min_gap']:.0f} days"
+    )
+
+
+with cluster_col4:
+    st.metric(
+        "Breaches Within 5 Days",
+        f"{cluster_5['clustered_pairs']:,}"
+    )
+
+breach_df = data.loc[
+    data["exceed_5"],
+    ["return_pct", "VaR_5"]
+].copy()
+
+
+fig_breach_clusters = go.Figure()
+
+fig_breach_clusters.add_trace(
+    go.Scatter(
+        x=breach_df.index,
+        y=breach_df["return_pct"],
+        mode="markers",
+        name="5% VaR Breach",
+        hovertemplate=(
+            "Date: %{x}<br>"
+            "Return: %{y:.2f}%"
+            "<extra></extra>"
+        )
+    )
+)
+
+fig_breach_clusters.update_layout(
+    title="5% VaR Exceedance Clustering Over Time",
+    xaxis_title="Date",
+    yaxis_title="Return (%)"
+)
+
+apply_theme(fig_breach_clusters)
+
+st.plotly_chart(
+    fig_breach_clusters,
+    use_container_width=True
+)
+
+cluster_ratio = (
+    cluster_5["clustered_pairs"]
+    / max(
+        cluster_5["total_breaches"] - 1,
+        1
+    )
+)
+
+
+if independence_5["result"] == "Reject":
+    st.warning(
+        f"The 5% VaR model shows statistically significant "
+        f"exceedance dependence. Of "
+        f"{cluster_5['total_breaches']:,} total breaches, "
+        f"{cluster_5['clustered_pairs']:,} occurred within five days "
+        f"of a previous breach. This suggests that losses exceeding "
+        f"the historical VaR threshold tend to cluster during "
+        f"high-volatility market episodes."
+    )
+
+else:
+    st.success(
+        "The 5% VaR exceedance sequence shows no statistically "
+        "significant evidence of temporal dependence."
+    )
+
+
+
 # =========================================================
 # REGIME VALIDATION
 # =========================================================
@@ -1763,5 +1916,7 @@ st.markdown(
 - If historical data are stale, live market data remain visible but are excluded from risk calculations to prevent invalid multi-day returns from being treated as one-day returns.
 - Short-term risk trend compares the current composite risk score with its level seven observations earlier.
 - Volatility state, VaR breach status, and Expected Shortfall trend provide a rule-based interpretation layer over the underlying quantitative risk metrics.
+- VaR models are formally evaluated using Kupiec unconditional coverage, Christoffersen independence, and conditional coverage tests.
+- Exceedance-clustering diagnostics measure the spacing of VaR breaches to identify periods in which tail losses occur in concentrated episodes.
 """
 )
