@@ -149,17 +149,29 @@ def apply_theme(fig: go.Figure) -> go.Figure:
 
 
 def filter_by_range(df: pd.DataFrame, range_option: str) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+
     if range_option == "Full History":
         return df.copy()
-    if range_option == "Last 5Y":
-        return df.last("1825D").copy()
-    if range_option == "Last 2Y":
-        return df.last("730D").copy()
-    if range_option == "Last 1Y":
-        return df.last("365D").copy()
-    if range_option == "Last 6M":
-        return df.last("180D").copy()
-    return df.copy()
+
+    end_date = df.index.max()
+
+    range_map = {
+        "Last 6M": pd.DateOffset(months=6),
+        "Last 1Y": pd.DateOffset(years=1),
+        "Last 2Y": pd.DateOffset(years=2),
+        "Last 5Y": pd.DateOffset(years=5),
+    }
+
+    offset = range_map.get(range_option)
+
+    if offset is None:
+        return df.copy()
+
+    start_date = end_date - offset
+
+    return df.loc[df.index >= start_date].copy()
 
 
 def latest_change(series: pd.Series, periods: int = 1):
