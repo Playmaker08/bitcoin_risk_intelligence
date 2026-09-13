@@ -203,6 +203,82 @@ def causal_percentile_rank(
         )
     )
 
+def classify_risk_trend(
+    current_score: float,
+    previous_score: float,
+    threshold: float = 0.05
+) -> str:
+    """
+    Classify short-term direction of composite risk.
+    """
+
+    change = current_score - previous_score
+
+    if change > threshold:
+        return "Rising"
+    elif change < -threshold:
+        return "Falling"
+
+    return "Stable"
+
+
+def classify_volatility_state(vol_percentile: float) -> str:
+    """
+    Convert current causal volatility percentile
+    into an interpretable market state.
+    """
+
+    if vol_percentile < 0.50:
+        return "Calm"
+    elif vol_percentile < 0.80:
+        return "Normal"
+    elif vol_percentile < 0.95:
+        return "Elevated"
+
+    return "Extreme"
+
+
+def classify_var_status(
+    current_return: float,
+    var_5: float,
+    var_1: float
+) -> str:
+    """
+    Determine whether today's return breached
+    the 5% or 1% VaR threshold.
+    """
+
+    if current_return < var_1:
+        return "Severe Breach"
+
+    elif current_return < var_5:
+        return "Breach"
+
+    return "Normal"
+
+
+def classify_tail_risk_trend(
+    current_es: float,
+    previous_es: float,
+    threshold: float = 0.25
+) -> str:
+    """
+    Compare current Expected Shortfall with
+    its value 30 observations earlier.
+
+    More negative ES = worsening tail risk.
+    """
+
+    change = current_es - previous_es
+
+    if change < -threshold:
+        return "Deteriorating"
+
+    elif change > threshold:
+        return "Improving"
+
+    return "Stable"
+    
 # =========================================================
 # DATA PIPELINE
 # =========================================================
@@ -604,6 +680,61 @@ st.sidebar.caption(
 display_df = filter_by_range(data, view_range)
 latest = data.iloc[-1]
 
+# =========================================================
+# RISK INTELLIGENCE SIGNALS
+# =========================================================
+
+# 7-day risk-score trend
+if len(data) >= 8:
+    risk_score_7d_ago = data["risk_score"].iloc[-8]
+
+    risk_trend = classify_risk_trend(
+        latest["risk_score"],
+        risk_score_7d_ago
+    )
+
+    risk_score_change_7d = (
+        latest["risk_score"]
+        - risk_score_7d_ago
+    )
+
+else:
+    risk_trend = "N/A"
+    risk_score_change_7d = np.nan
+
+
+# Current volatility state
+volatility_state = classify_volatility_state(
+    latest["vol_pct"]
+)
+
+
+# Current VaR breach status
+var_status = classify_var_status(
+    latest["return_pct"],
+    latest["VaR_5"],
+    latest["VaR_1"]
+)
+
+
+# 30-day Expected Shortfall trend
+if len(data) >= 31:
+    es_30d_ago = data["ES_5"].iloc[-31]
+
+    tail_risk_trend = classify_tail_risk_trend(
+        latest["ES_5"],
+        es_30d_ago
+    )
+
+    es_change_30d = (
+        latest["ES_5"]
+        - es_30d_ago
+    )
+
+else:
+    tail_risk_trend = "N/A"
+    es_change_30d = np.nan
+
 selected_var = "VaR_5" if tail_level == "5%" else "VaR_1"
 selected_es = "ES_5" if tail_level == "5%" else "ES_1"
 selected_exceed = "exceed_5" if tail_level == "5%" else "exceed_1"
@@ -748,6 +879,83 @@ else:
             "Live price is displayed separately but is not included "
             "in return or risk calculations."
         )
+
+# =========================================================
+# RISK INTELLIGENCE
+# =========================================================
+
+st.markdown("---")
+st.subheader("Risk Intelligence")
+
+intel1, intel2, intel3, intel4 = st.columns(4)
+
+
+with intel1:
+    st.metric(
+        "Risk Trend (7D)",
+        risk_trend,
+        None if np.isnan(risk_score_change_7d)
+        else f"{risk_score_change_7d:+.3f}"
+    )
+
+
+with intel2:
+    st.metric(
+        "Volatility State",
+        volatility_state,
+        f"{latest['vol_pct']:.0%} percentile"
+    )
+
+
+with intel3:
+    st.metric(
+        "VaR Status",
+        var_status,
+        f"Return: {latest['return_pct']:.2f}%"
+    )
+
+
+with intel4:
+    st.metric(
+        "Tail-Risk Trend (30D)",
+        tail_risk_trend,
+        None if np.isnan(es_change_30d)
+        else f"{es_change_30d:+.3f}"
+    )
+
+risk_signal_text = (
+    f"Composite risk is currently **{risk_trend.lower()}** over the past 7 days. "
+    f"Realized volatility is in the **{latest['vol_pct']:.0%} historical percentile**, "
+    f"corresponding to a **{volatility_state.lower()} volatility environment**. "
+    f"The latest daily return shows **{var_status.lower()}** relative to current VaR thresholds. "
+    f"Expected Shortfall indicates tail risk is **{tail_risk_trend.lower()}** versus 30 days ago."
+)
+
+st.info(risk_signal_text)
+
+# =========================================================
+# RISK ALERT
+# =========================================================
+
+if var_status == "Severe Breach":
+    st.error(
+        "Critical Risk Alert: today's return has breached the 1% VaR threshold."
+    )
+
+elif var_status == "Breach":
+    st.warning(
+        "Risk Alert: today's return has breached the 5% VaR threshold."
+    )
+
+elif latest["risk_regime"] == "Extreme Risk":
+    st.error(
+        "Critical Risk Alert: composite market risk is in the Extreme Risk regime."
+    )
+
+elif latest["risk_regime"] == "High Risk":
+    st.warning(
+        "Elevated Risk Alert: composite market risk is in the High Risk regime."
+    )
 
 # =========================================================
 # MARKET OVERVIEW
@@ -988,5 +1196,7 @@ st.markdown(
 - VaR and Expected Shortfall are estimated from 250-day rolling historical returns.
 - Risk regimes are derived from a causal composite percentile score using volatility, VaR, and Expected Shortfall; each observation is ranked only against information available up to that date.
 - If historical data are stale, live market data remain visible but are excluded from risk calculations to prevent invalid multi-day returns from being treated as one-day returns.
+- Short-term risk trend compares the current composite risk score with its level seven observations earlier.
+- Volatility state, VaR breach status, and Expected Shortfall trend provide a rule-based interpretation layer over the underlying quantitative risk metrics.
 """
 )
