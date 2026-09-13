@@ -1,11 +1,72 @@
 import requests
+import pandas as pd
 import streamlit as st
 from datetime import datetime, timezone
 
 
 COINGECKO_URL = "https://api.coingecko.com/api/v3/simple/price"
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_historical_btc_data(days: int) -> pd.DataFrame:
+    """
+    Fetch historical BTC/USD market data from CoinGecko.
+    """
 
+    url = (
+        "https://api.coingecko.com/api/v3/coins/"
+        "bitcoin/market_chart"
+    )
+
+    params = {
+        "vs_currency": "usd",
+        "days": days,
+        "interval": "daily",
+    }
+
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            timeout=15,
+        )
+
+        response.raise_for_status()
+
+        payload = response.json()
+
+        prices = payload.get("prices", [])
+
+        if not prices:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(
+            prices,
+            columns=["timestamp", "Close"]
+        )
+
+        df["date"] = pd.to_datetime(
+            df["timestamp"],
+            unit="ms",
+            utc=True
+        )
+
+        df["date"] = (
+            df["date"]
+            .dt.tz_localize(None)
+            .dt.normalize()
+        )
+
+        df = (
+            df[["date", "Close"]]
+            .drop_duplicates("date")
+            .sort_values("date")
+        )
+
+        return df
+
+    except Exception:
+        return pd.DataFrame()
+    
 @st.cache_data(ttl=300, show_spinner=False)
 def get_live_btc_market_data():
     """
